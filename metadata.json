@@ -1,0 +1,7 @@
+{
+  "name": "KAREN - Asistente Personal de Anthony",
+  "description": "Asistente inteligente con interfaz HUD futurista, mapa de proyectos interactivo y síntesis de voz natural.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
