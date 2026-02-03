@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { MessageSquare, Map, Settings, Layout } from 'lucide-react';
+import { MessageSquare, Map, Settings, Layout, Timer } from 'lucide-react';
 import { ViewType } from '../types';
 import SpiderLogo from './SpiderLogo';
 
@@ -14,6 +14,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onViewChange, activeProj
   const items = [
     { id: 'chat', icon: MessageSquare, label: 'KAREN CHAT' },
     { id: 'map', icon: Map, label: 'MAPA GLOBAL' },
+    { id: 'study', icon: Timer, label: 'SESIONES DE ESTUDIO' },
     { id: 'settings', icon: Settings, label: 'CONFIGURACIÓN' },
   ];
 

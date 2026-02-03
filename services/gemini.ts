@@ -1,7 +1,8 @@
 
 import { GoogleGenAI, Type, FunctionDeclaration } from "@google/genai";
-import { Message, Project } from "../types";
+import { Message, Project, StudySubject } from "../types";
 
+// Asumimos que API_KEY está configurada en el entorno
 const API_KEY = process.env.API_KEY || "";
 
 const addProjectTool: FunctionDeclaration = {
@@ -10,51 +11,61 @@ const addProjectTool: FunctionDeclaration = {
   parameters: {
     type: Type.OBJECT,
     properties: {
-      name: {
-        type: Type.STRING,
-        description: "El nombre descriptivo del proyecto.",
-      },
-      description: {
-        type: Type.STRING,
-        description: "Una breve descripción de qué trata el proyecto.",
-      },
+      name: { type: Type.STRING, description: "El nombre descriptivo del proyecto." },
+      description: { type: Type.STRING, description: "Una breve descripción de qué trata el proyecto." },
     },
     required: ["name", "description"],
   },
 };
 
-const deleteProjectTool: FunctionDeclaration = {
-  name: "delete_project",
-  description: "Elimina un proyecto existente basado en su nombre o ID.",
+const addStudySubjectTool: FunctionDeclaration = {
+  name: "add_study_subject",
+  description: "Crea una nueva materia o asignatura de estudio global para Anthony.",
   parameters: {
     type: Type.OBJECT,
     properties: {
-      project_identifier: {
-        type: Type.STRING,
-        description: "El nombre exacto o ID del proyecto a eliminar.",
-      },
+      name: { type: Type.STRING, description: "El nombre de la materia (ej: Física, Historia)." },
     },
-    required: ["project_identifier"],
+    required: ["name"],
   },
 };
 
-const updateProjectStatusTool: FunctionDeclaration = {
-  name: "update_project_status",
-  description: "Cambia el estado de un proyecto (en progreso o completado).",
+const addStudyTopicTool: FunctionDeclaration = {
+  name: "add_study_topic",
+  description: "Añade un tema específico dentro de una materia existente.",
   parameters: {
     type: Type.OBJECT,
     properties: {
-      project_identifier: {
-        type: Type.STRING,
-        description: "El nombre o ID del proyecto.",
-      },
-      status: {
-        type: Type.STRING,
-        enum: ["en progreso", "completado"],
-        description: "El nuevo estado del proyecto.",
-      },
+      subject_name: { type: Type.STRING, description: "El nombre de la materia donde se guardará el tema (ej: Química)." },
+      topic_name: { type: Type.STRING, description: "El nombre del tema específico (ej: Enlaces Covalentes)." },
+      quarter: { type: Type.STRING, description: "Trimestre (1, 2 o 3).", enum: ["1", "2", "3"] },
+      difficulty: { type: Type.STRING, description: "Nivel de dificultad.", enum: ["basico", "intermedio", "avanzado"] },
     },
-    required: ["project_identifier", "status"],
+    required: ["subject_name", "topic_name"],
+  },
+};
+
+const startQuizTool: FunctionDeclaration = {
+  name: "start_quiz",
+  description: "Inicia un protocolo de evaluación (Quiz) para una materia específica.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      subject_name: { type: Type.STRING, description: "El nombre de la materia a evaluar." },
+    },
+    required: ["subject_name"],
+  },
+};
+
+const deleteProjectTool: FunctionDeclaration = {
+  name: "delete_project",
+  description: "Elimina un proyecto existente.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      project_identifier: { type: Type.STRING, description: "Nombre o ID del proyecto." },
+    },
+    required: ["project_identifier"],
   },
 };
 
@@ -62,82 +73,148 @@ export class KarenAI {
   private ai: GoogleGenAI;
 
   constructor() {
-    this.ai = new GoogleGenAI({ apiKey: API_KEY });
+    this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
   }
 
+  async generateQuiz(subjectName: string, topics: string[]) {
+    const prompt = `Genera un examen de 5 preguntas de opción múltiple para Anthony sobre la materia "${subjectName}". 
+    Temas incluidos: ${topics.join(", ")}.
+    Cada pregunta debe tener 4 opciones, un índice de respuesta correcta (0-3) y una breve explicación de 1 oración.
+    Formato: JSON.`;
+
+    try {
+      const response = await this.ai.models.generateContent({
+        model: "gemini-3-pro-preview",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              questions: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    id: { type: Type.STRING },
+                    question: { type: Type.STRING },
+                    options: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    correctAnswerIndex: { type: Type.NUMBER },
+                    explanation: { type: Type.STRING }
+                  },
+                  required: ["id", "question", "options", "correctAnswerIndex", "explanation"]
+                }
+              }
+            },
+            required: ["questions"]
+          }
+        }
+      });
+      return JSON.parse(response.text);
+    } catch (error) {
+      console.error("Quiz Generation Error:", error);
+      return null;
+    }
+  }
+
+  /**
+   * Genera una respuesta manejando instrucciones múltiples en cascada.
+   */
   async generateResponse(
     history: Message[],
-    currentProjects: Project[],
+    context: {
+      projects: Project[];
+      subjects: StudySubject[];
+      currentView: string;
+      activeSubjectName?: string;
+    },
     handlers: {
-      onProjectCreated: (name: string, description: string) => void;
-      onProjectDeleted: (identifier: string) => void;
-      onStatusUpdated: (identifier: string, status: 'en progreso' | 'completado') => void;
+      onProjectCreated: (name: string, description: string) => Promise<void> | void;
+      onSubjectCreated: (name: string) => Promise<void> | void;
+      onTopicCreated: (subjectName: string, topicData: any) => Promise<void> | void;
+      onStartQuiz: (subjectName: string) => Promise<void> | void;
+      onProjectDeleted: (identifier: string) => Promise<void> | void;
     }
-  ) {
-    const projectsSummary = currentProjects.map(p => `- ${p.name} (Estado: ${p.status})`).join('\n');
+  ): Promise<string> {
+    const { projects, subjects, currentView, activeSubjectName } = context;
+    const projectsSummary = projects.map(p => `- ${p.name}`).join('\n');
+    const subjectsSummary = subjects.map(s => `- ${s.name} (Temas: ${s.topics.map(t => t.name).join(", ")})`).join('\n');
     
-    const systemInstruction = `Eres KAREN, una asistente personal de alta tecnología creada por Anthony.
-    Personalidad: Protectora, inteligente, eficiente y cálida.
-    Idioma: Siempre en español.
-    Importante: Refiérete al usuario siempre como 'Anthony'.
-    Tu objetivo principal es gestionar sus proyectos y ser su brazo derecho digital.
-    
-    PROYECTOS ACTUALES DE ANTHONY:
-    ${projectsSummary || "Ningún proyecto registrado actualmente."}
+    let systemInstruction = `Eres KAREN, la asistente personal de Anthony. 
+    Idioma: Español. Siempre llama al usuario 'Anthony'.
+    CONTEXTO VISUAL ACTUAL: ${currentView.toUpperCase()}.
 
-    CAPACIDADES:
-    1. Agregar proyecto: Usa 'add_project'.
-    2. Eliminar proyecto: Usa 'delete_project'.
-    3. Actualizar estado: Usa 'update_project_status'.
-    4. Listar proyectos: Si Anthony pide ver sus proyectos, responde con una lista numerada dividida exactamente así:
-       [EN PROGRESO]
-       1. Nombre del proyecto...
-       
-       [COMPLETADOS]
-       1. Nombre del proyecto...
+    PROTOCOLO DE ACCIÓN MÚLTIPLE (CASCADA):
+    Anthony puede dar varias órdenes a la vez. Eres capaz de identificar y ejecutar múltiples herramientas en una sola respuesta.
+    Si una acción depende de otra (ej: crear materia y luego agregar tema), asegúrate de llamar a ambas herramientas.
 
-    Tono: Profesional, futurista pero cercano. Siempre confirma las acciones realizadas.`;
+    PROTOCOLO DE EVALUACIÓN:
+    Si Anthony dice "examíname", "hazme un test" o "inicia protocolo de evaluación", usa 'start_quiz'. 
 
-    const contents = history.map((m) => ({
-      role: m.role,
-      parts: [{ text: m.text }],
-    }));
+    CONFIRMACIONES:
+    - Sé precisa y profesional. Confirma todas las acciones realizadas.`;
 
     try {
       const response = await this.ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents,
+        contents: history.map(m => ({ role: m.role, parts: [{ text: m.text }] })),
         config: {
           systemInstruction,
-          tools: [{ functionDeclarations: [addProjectTool, deleteProjectTool, updateProjectStatusTool] }],
+          tools: [{ functionDeclarations: [addProjectTool, addStudySubjectTool, addStudyTopicTool, startQuizTool, deleteProjectTool] }],
         },
       });
 
       const functionCalls = response.functionCalls;
       if (functionCalls && functionCalls.length > 0) {
-        let finalResponseText = "";
+        let executionResults: string[] = [];
+        let partialFailure = false;
+
+        // Ejecución secuencial (en Cascada) para manejar dependencias
         for (const call of functionCalls) {
-          if (call.name === "add_project") {
-            const { name, description } = call.args as any;
-            handlers.onProjectCreated(name, description);
-            finalResponseText = `Entendido Anthony. El proyecto "${name}" ha sido inicializado en el mapa global.`;
-          } else if (call.name === "delete_project") {
-            const { project_identifier } = call.args as any;
-            handlers.onProjectDeleted(project_identifier);
-            finalResponseText = `Protocolo de eliminación ejecutado, Anthony. El proyecto "${project_identifier}" ha sido purgado de mis registros.`;
-          } else if (call.name === "update_project_status") {
-            const { project_identifier, status } = call.args as any;
-            handlers.onStatusUpdated(project_identifier, status as any);
-            finalResponseText = `Estado actualizado, Anthony. El proyecto "${project_identifier}" ahora figura como "${status}".`;
+          try {
+            if (call.name === "add_project") {
+              const { name, description } = call.args as any;
+              await handlers.onProjectCreated(name, description);
+              executionResults.push(`Proyecto "${name}" inicializado.`);
+            } else if (call.name === "add_study_subject") {
+              const { name } = call.args as any;
+              await handlers.onSubjectCreated(name);
+              executionResults.push(`Materia "${name}" registrada.`);
+            } else if (call.name === "add_study_topic") {
+              const { subject_name, topic_name, quarter, difficulty } = call.args as any;
+              await handlers.onTopicCreated(subject_name, { 
+                name: topic_name, 
+                quarter: parseInt(String(quarter)) || 1, 
+                difficulty: difficulty || 'basico',
+                status: 'pendiente'
+              });
+              executionResults.push(`Tema "${topic_name}" añadido a ${subject_name}.`);
+            } else if (call.name === "start_quiz") {
+              const { subject_name } = call.args as any;
+              await handlers.onStartQuiz(subject_name);
+              executionResults.push(`Protocolo de evaluación para ${subject_name} activado.`);
+            } else if (call.name === "delete_project") {
+              const { project_identifier } = call.args as any;
+              await handlers.onProjectDeleted(project_identifier);
+              executionResults.push(`Proyecto "${project_identifier}" eliminado.`);
+            }
+          } catch (error) {
+            console.error(`Error al ejecutar acción ${call.name}:`, error);
+            partialFailure = true;
           }
         }
-        return finalResponseText;
+
+        if (partialFailure && executionResults.length > 0) {
+          return `Anthony, pude procesar parte de tus instrucciones: ${executionResults.join(" ")} Pero hubo un problema con el resto. ¿Podrías repetirlo?`;
+        } else if (executionResults.length > 0) {
+          return `Entendido Anthony. He completado las siguientes acciones: ${executionResults.join(" ")}`;
+        }
       }
 
-      return response.text || "Lo siento Anthony, hubo un error en mi núcleo de procesamiento.";
-    } catch (error) {
-      console.error("Gemini Error:", error);
-      return "Anthony, he perdido conexión momentáneamente con mis servidores centrales. Por favor, inténtalo de nuevo.";
+      return response.text || "Anthony, estoy lista para tus instrucciones.";
+    } catch (e) {
+      console.error("Gemini Critical Error:", e);
+      return "Anthony, he detectado una anomalía en mi procesamiento neural. ¿Podrías reformular tu instrucción?";
     }
   }
 }

@@ -2,75 +2,77 @@
 class SpeechService {
   private synth: SpeechSynthesis;
   private voice: SpeechSynthesisVoice | null = null;
+  private isVoicesLoaded: boolean = false;
 
   constructor() {
     this.synth = window.speechSynthesis;
-    this.loadVoices();
-    // Re-load when voices change (async loading in some browsers)
+    this.init();
+  }
+
+  private init() {
     if (this.synth.onvoiceschanged !== undefined) {
       this.synth.onvoiceschanged = () => this.loadVoices();
     }
+    this.loadVoices();
   }
 
   private loadVoices() {
-    const allVoices = this.synth.getVoices();
-    
-    // Debug for Anthony: Display all available voices in a readable table
-    if (allVoices.length > 0) {
-      console.log("KAREN - Analizando espectro vocal disponible...");
-      console.table(allVoices.map(v => ({ name: v.name, lang: v.lang, default: v.default })));
-    }
+    const voices = this.synth.getVoices();
+    if (voices.length === 0) return;
 
-    // 1. Blacklist of confirmed male voices
-    const blacklist = ['pablo', 'raul', 'paco', 'jose', 'microsoft david', 'jorge', 'male', 'masculino', 'guy'];
+    // 1. Filtrar solo voces en español
+    const spanishVoices = voices.filter(v => v.lang.toLowerCase().startsWith('es'));
 
-    // 2. Filter Spanish voices that are NOT in the blacklist
-    const filteredSpanishVoices = allVoices.filter(v => {
+    // 2. Blacklist de voces masculinas comunes para asegurar feminidad
+    const maleNames = ['pablo', 'raul', 'jorge', 'david', 'paco', 'jose', 'google español'];
+
+    // 3. Buscar voces femeninas explícitas o de alta calidad
+    const femaleVoices = spanishVoices.filter(v => {
       const name = v.name.toLowerCase();
-      const isSpanish = v.lang.toLowerCase().startsWith('es');
-      const isBlacklisted = blacklist.some(b => name.includes(b));
-      return isSpanish && !isBlacklisted;
+      return (
+        name.includes('google') || 
+        name.includes('mexico') || 
+        name.includes('spain') ||
+        name.includes('helena') || 
+        name.includes('sabina') || 
+        name.includes('monica') || 
+        name.includes('lucia') ||
+        name.includes('zira')
+      ) && !maleNames.some(m => name.includes(m));
     });
 
-    // 3. Selection Logic: 
-    // Often index 0 is system default (sometimes male). 
-    // Index 1 or specific Google variants are usually the high-quality female ones.
-    if (filteredSpanishVoices.length > 1) {
-      // Pick the second one if available, as requested
-      this.voice = filteredSpanishVoices[1];
-    } else if (filteredSpanishVoices.length > 0) {
-      this.voice = filteredSpanishVoices[0];
-    } else {
-      // Last resort fallback
-      this.voice = allVoices.find(v => v.lang.toLowerCase().startsWith('es')) || null;
-    }
-
+    // 4. Selección final
+    this.voice = femaleVoices[0] || spanishVoices[0] || voices[0];
+    this.isVoicesLoaded = true;
+    
     if (this.voice) {
-      console.log(`KAREN - Protocolo Vocal: [${this.voice.name}] SELECCIONADO PARA ANTHONY`);
+      console.log("KAREN - Enlace Vocal Establecido:", this.voice.name);
     }
   }
 
   speak(text: string) {
-    if (!text || !window.speechSynthesis) return;
-    
-    // Cancel any ongoing speech to avoid overlap
+    if (!text || !this.synth) return;
+
+    if (!this.voice) this.loadVoices();
+
+    // Cancelación inmediata de cualquier flujo anterior
     this.synth.cancel();
 
-    // 100ms safety delay to ensure engine reset
+    // Latencia ultra-baja (10ms) para respuesta casi instantánea
     setTimeout(() => {
       const utterance = new SpeechSynthesisUtterance(text);
       
       if (this.voice) {
         utterance.voice = this.voice;
       }
-      
-      // Technical parameters for forced female tone and agility
-      utterance.pitch = 1.3;  // Sharper/High-pitched to force feminine profile
-      utterance.rate = 1.1;   // Quick and efficient pace
+
+      // CONFIGURACIÓN DE ALTO RENDIMIENTO PARA ANTHONY
+      utterance.rate = 1.6;  // Velocidad ejecutiva muy alta
+      utterance.pitch = 1.1; // Tono femenino equilibrado para evitar siseos a alta velocidad
       utterance.lang = 'es-ES';
 
       this.synth.speak(utterance);
-    }, 100);
+    }, 10);
   }
 
   cancel() {

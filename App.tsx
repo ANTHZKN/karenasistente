@@ -1,241 +1,178 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import ProjectsMap from './components/ProjectsMap';
 import ChatInterface from './components/ChatInterface';
 import ProjectWorkspace from './components/ProjectWorkspace';
-import { AppState, Project, Message, ViewType } from './types';
+import EstudioCanvas from './components/EstudioCanvas';
+import { AppState, Project, Message, ViewType, StudySubject, StudyTopic } from './types';
 import { karenAI } from './services/gemini';
 import { speechService } from './services/speech';
+import { VoiceProcessor } from './services/voiceProcessor';
 
-const STORAGE_KEY = 'KAREN_STATE_V1';
+const PROJECTS_STORAGE_KEY = 'KAREN_STATE_V1';
+const STUDY_STORAGE_KEY = 'KAREN_STUDY_DATA';
 
 const App: React.FC = () => {
   const [state, setState] = useState<AppState>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) return JSON.parse(saved);
-    return {
+    const savedProjects = localStorage.getItem(PROJECTS_STORAGE_KEY);
+    const savedStudy = localStorage.getItem(STUDY_STORAGE_KEY);
+    
+    const projectData = savedProjects ? JSON.parse(savedProjects) : {
       projects: [],
       activeProjectId: null,
+      generalChat: [{ role: 'model', text: 'Bienvenido Anthony. Sistema de proyectos listo.', timestamp: Date.now() }],
+    };
+
+    const studyData = savedStudy ? JSON.parse(savedStudy) : {
+      studySessionsCount: 0,
+      studySubjects: [],
+      activeSubjectId: null,
+    };
+
+    return {
       currentView: 'chat',
-      generalChat: [
-        { role: 'model', text: 'Bienvenido Anthony. Estoy lista para asistirte.', timestamp: Date.now() }
-      ],
       isVoiceEnabled: true,
+      ...projectData,
+      ...studyData
     };
   });
 
   const [isLoading, setIsLoading] = useState(false);
+  const [isStudyTimerActive, setIsStudyTimerActive] = useState(false);
+  const voiceProcessorRef = useRef<VoiceProcessor | null>(null);
 
-  // Persist state
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }, [state]);
+    localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify({
+      projects: state.projects,
+      activeProjectId: state.activeProjectId,
+      generalChat: state.generalChat
+    }));
+  }, [state.projects, state.activeProjectId, state.generalChat]);
 
-  const addProject = useCallback((name: string, description: string) => {
+  useEffect(() => {
+    localStorage.setItem(STUDY_STORAGE_KEY, JSON.stringify({
+      studySessionsCount: state.studySessionsCount,
+      studySubjects: state.studySubjects,
+      activeSubjectId: state.activeSubjectId
+    }));
+  }, [state.studySessionsCount, state.studySubjects, state.activeSubjectId]);
+
+  const addProject = useCallback(async (name: string, description: string) => {
     const newProject: Project = {
       id: Math.random().toString(36).substr(2, 9),
-      name,
-      description,
-      createdAt: Date.now(),
-      status: 'en progreso',
-      chatHistory: [
-        { role: 'model', text: `Anthony, he inicializado el entorno de trabajo para "${name}". ¿Cómo deseas proceder?`, timestamp: Date.now() }
-      ],
-      ideaNodes: [],
-      ideaLinks: [],
-      images: []
+      name, description, createdAt: Date.now(), status: 'en progreso',
+      chatHistory: [{ role: 'model', text: `Entorno para "${name}" inicializado.`, timestamp: Date.now() }],
+      ideaNodes: [], ideaLinks: [], images: []
     };
-    setState(prev => ({
-      ...prev,
-      projects: [...prev.projects, newProject]
-    }));
+    setState(prev => ({ ...prev, projects: [...prev.projects, newProject] }));
+    return Promise.resolve();
   }, []);
 
-  const deleteProject = useCallback((identifier: string) => {
+  const addSubject = useCallback(async (name: string) => {
+    const newSub: StudySubject = {
+      id: Math.random().toString(36).substr(2, 9),
+      name, topics: [], lastAccessed: Date.now()
+    };
+    setState(prev => ({ ...prev, studySubjects: [...prev.studySubjects, newSub] }));
+    return Promise.resolve();
+  }, []);
+
+  const addTopicToSubjectByName = useCallback(async (subjectName: string, topicData: any) => {
     setState(prev => {
-      const filtered = prev.projects.filter(p => 
-        p.id !== identifier && p.name.toLowerCase() !== identifier.toLowerCase()
-      );
-      return {
-        ...prev,
-        projects: filtered,
-        activeProjectId: prev.activeProjectId === identifier ? null : prev.activeProjectId,
-        currentView: (prev.activeProjectId === identifier && prev.currentView === 'workspace') ? 'chat' : prev.currentView
+      const subject = prev.studySubjects.find(s => s.name.toLowerCase() === subjectName.toLowerCase());
+      if (!subject) return prev;
+      const newTopic: StudyTopic = {
+        id: Math.random().toString(36).substr(2, 9),
+        name: topicData.name,
+        quarter: topicData.quarter || 1,
+        difficulty: topicData.difficulty || 'basico',
+        status: 'pendiente',
+        chatHistory: [{ role: 'model', text: `Entorno para tema "${topicData.name}" activado.`, timestamp: Date.now() }]
       };
+      return { ...prev, studySubjects: prev.studySubjects.map(s => s.id === subject.id ? { ...s, topics: [...s.topics, newTopic] } : s) };
     });
+    return Promise.resolve();
   }, []);
 
-  const updateProjectStatus = useCallback((identifier: string, status: 'en progreso' | 'completado') => {
-    setState(prev => ({
-      ...prev,
-      projects: prev.projects.map(p => 
-        (p.id === identifier || p.name.toLowerCase() === identifier.toLowerCase()) 
-        ? { ...p, status } 
-        : p
-      )
+  const handleStartQuizByVoice = useCallback(async (subjectName: string) => {
+    setState(prev => {
+      const subject = prev.studySubjects.find(s => s.name.toLowerCase() === subjectName.toLowerCase());
+      if (subject) {
+        return { ...prev, currentView: 'study', activeSubjectId: subject.id };
+      }
+      return prev;
+    });
+    return Promise.resolve();
+  }, []);
+
+  const deleteProject = useCallback(async (identifier: string) => {
+    setState(prev => ({ 
+      ...prev, 
+      projects: prev.projects.filter(p => p.id !== identifier && p.name !== identifier) 
     }));
+    return Promise.resolve();
   }, []);
 
-  const handleSendMessage = async (text: string) => {
+  const handleSendMessage = async (text: string, subjectId?: string, topicId?: string) => {
+    // Implementación de Procesamiento en Cascada
+    // Si viene del VoiceProcessor, podríamos recibir una frase compleja
+    setIsLoading(true);
+    
     const userMsg: Message = { role: 'user', text, timestamp: Date.now() };
     
-    // Update UI first
-    setState(prev => ({
-      ...prev,
-      generalChat: [...prev.generalChat, userMsg]
-    }));
+    // Actualización local inmediata
+    if (subjectId && topicId) {
+      setState(prev => ({ ...prev, studySubjects: prev.studySubjects.map(s => s.id === subjectId ? { ...s, topics: s.topics.map(t => t.id === topicId ? { ...t, chatHistory: [...t.chatHistory, userMsg] } : t) } : s) }));
+    } else {
+      setState(prev => ({ ...prev, generalChat: [...prev.generalChat, userMsg] }));
+    }
     
-    setIsLoading(true);
+    const activeSubject = subjectId ? state.studySubjects.find(s => s.id === subjectId) : null;
+    const activeTopic = topicId ? activeSubject?.topics.find(t => t.id === topicId) : null;
+    const history = activeTopic ? activeTopic.chatHistory : state.generalChat;
 
+    // KAREN procesa el comando a través de Gemini con manejo de herramientas múltiples
     const response = await karenAI.generateResponse(
-      [...state.generalChat, userMsg],
-      state.projects,
+      [...history, userMsg],
+      { projects: state.projects, subjects: state.studySubjects, currentView: state.currentView, activeSubjectName: activeTopic?.name },
       {
         onProjectCreated: addProject,
-        onProjectDeleted: deleteProject,
-        onStatusUpdated: updateProjectStatus
+        onSubjectCreated: addSubject,
+        onTopicCreated: addTopicToSubjectByName,
+        onStartQuiz: handleStartQuizByVoice,
+        onProjectDeleted: deleteProject
       }
     );
 
     const karenMsg: Message = { role: 'model', text: response, timestamp: Date.now() };
-
-    setState(prev => ({
-      ...prev,
-      generalChat: [...prev.generalChat, karenMsg]
-    }));
-
-    if (state.isVoiceEnabled) {
-      speechService.speak(response);
+    if (subjectId && topicId) {
+      setState(prev => ({ ...prev, studySubjects: prev.studySubjects.map(s => s.id === subjectId ? { ...s, topics: s.topics.map(t => t.id === topicId ? { ...t, chatHistory: [...t.chatHistory, karenMsg] } : t) } : s) }));
+    } else {
+      setState(prev => ({ ...prev, generalChat: [...prev.generalChat, karenMsg] }));
     }
+
+    if (state.isVoiceEnabled) speechService.speak(response);
+    
+    // Limpieza de buffer tras procesamiento exitoso
+    if (voiceProcessorRef.current) voiceProcessorRef.current.clearBuffer();
     
     setIsLoading(false);
   };
 
-  const handleUpdateProject = (updated: Project) => {
-    setState(prev => ({
-      ...prev,
-      projects: prev.projects.map(p => p.id === updated.id ? updated : p)
-    }));
-  };
-
-  const selectProject = (id: string) => {
-    setState(prev => ({
-      ...prev,
-      activeProjectId: id,
-      currentView: 'workspace'
-    }));
-  };
-
-  const activeProject = state.projects.find(p => p.id === state.activeProjectId);
-
   return (
-    <div className="flex h-screen w-screen bg-[#050505] text-[#e2e8f0] font-['Space_Grotesk'] overflow-hidden">
+    <div className={`flex h-screen w-screen bg-[#050505] text-[#e2e8f0] font-['Space_Grotesk'] overflow-hidden ${isStudyTimerActive ? 'border-2 border-[#ff8c0022]' : ''}`}>
       <Sidebar 
         currentView={state.currentView} 
         onViewChange={(view) => setState(prev => ({ ...prev, currentView: view }))}
-        activeProjectName={activeProject?.name}
+        activeProjectName={state.projects.find(p => p.id === state.activeProjectId)?.name}
       />
-      
       <main className="flex-1 relative overflow-hidden">
-        {state.currentView === 'chat' && (
-          <div className="h-full max-w-5xl mx-auto p-6 flex flex-col">
-            <div className="mb-6 flex items-center justify-between">
-              <div>
-                <h1 className="text-2xl font-bold tracking-tighter text-[#00d2ff] glow-text uppercase">Consola KAREN</h1>
-                <p className="text-xs text-slate-500 tracking-widest font-mono">STATUS: AWAITING INPUT_</p>
-              </div>
-              {isLoading && (
-                <div className="flex gap-1">
-                  <span className="w-1.5 h-1.5 bg-[#00d2ff] rounded-full animate-bounce [animation-delay:-0.3s]"></span>
-                  <span className="w-1.5 h-1.5 bg-[#00d2ff] rounded-full animate-bounce [animation-delay:-0.15s]"></span>
-                  <span className="w-1.5 h-1.5 bg-[#00d2ff] rounded-full animate-bounce"></span>
-                </div>
-              )}
-            </div>
-            <ChatInterface 
-              messages={state.generalChat} 
-              onSendMessage={handleSendMessage}
-              isVoiceEnabled={state.isVoiceEnabled}
-              onToggleVoice={() => setState(prev => ({ ...prev, isVoiceEnabled: !prev.isVoiceEnabled }))}
-            />
-          </div>
-        )}
-
-        {state.currentView === 'map' && (
-          <ProjectsMap 
-            projects={state.projects} 
-            onSelectProject={selectProject}
-            onDeleteProject={deleteProject} 
-          />
-        )}
-
-        {state.currentView === 'workspace' && activeProject && (
-          <ProjectWorkspace 
-            project={activeProject} 
-            onUpdateProject={handleUpdateProject}
-            isVoiceEnabled={state.isVoiceEnabled}
-            onToggleVoice={() => setState(prev => ({ ...prev, isVoiceEnabled: !prev.isVoiceEnabled }))}
-          />
-        )}
-
-        {state.currentView === 'settings' && (
-          <div className="h-full p-10 max-w-2xl">
-            <h1 className="text-3xl font-bold text-[#00d2ff] glow-text mb-8">NÚCLEO DE CONFIGURACIÓN</h1>
-            <div className="space-y-6">
-              <div className="glass p-6 rounded-2xl flex items-center justify-between">
-                <div>
-                  <h3 className="font-bold">Síntesis de Voz</h3>
-                  <p className="text-xs text-slate-500">Activa o desactiva la comunicación verbal de KAREN.</p>
-                </div>
-                <button 
-                  onClick={() => setState(prev => ({ ...prev, isVoiceEnabled: !prev.isVoiceEnabled }))}
-                  className={`w-12 h-6 rounded-full transition-all relative ${state.isVoiceEnabled ? 'bg-[#00d2ff]' : 'bg-slate-700'}`}
-                >
-                  <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${state.isVoiceEnabled ? 'right-1' : 'left-1'}`} />
-                </button>
-              </div>
-              
-              <div className="glass p-6 rounded-2xl">
-                <h3 className="font-bold mb-4">Métricas del Sistema</h3>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="p-4 border border-[#00d2ff11] rounded-xl bg-black/40">
-                    <span className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Proyectos</span>
-                    <p className="text-2xl font-bold text-[#00d2ff]">{state.projects.length}</p>
-                  </div>
-                  <div className="p-4 border border-[#00d2ff11] rounded-xl bg-black/40">
-                    <span className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Interacciones</span>
-                    <p className="text-2xl font-bold text-[#00d2ff]">{state.generalChat.length}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="pt-10">
-                <button 
-                  onClick={() => {
-                    if(confirm("¿Estás seguro Anthony? Esto borrará todos los registros.")) {
-                      localStorage.removeItem(STORAGE_KEY);
-                      window.location.reload();
-                    }
-                  }}
-                  className="px-6 py-3 border border-red-500/30 text-red-500 text-xs font-bold uppercase tracking-widest rounded-lg hover:bg-red-500/10 transition-all"
-                >
-                  Purgar Memoria del Sistema
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+        {state.currentView === 'chat' && <div className="h-full max-w-5xl mx-auto p-6 flex flex-col"><ChatInterface messages={state.generalChat} onSendMessage={handleSendMessage} isVoiceEnabled={state.isVoiceEnabled} onToggleVoice={() => setState(prev => ({ ...prev, isVoiceEnabled: !prev.isVoiceEnabled }))} /></div>}
+        {state.currentView === 'map' && <ProjectsMap projects={state.projects} onSelectProject={(id) => setState(prev => ({ ...prev, activeProjectId: id, currentView: 'workspace' }))} onDeleteProject={deleteProject} />}
+        {state.currentView === 'study' && <EstudioCanvas subjects={state.studySubjects} onUpdateSubjects={(subjects) => setState(prev => ({ ...prev, studySubjects: subjects }))} onSessionComplete={() => setState(prev => ({ ...prev, studySessionsCount: prev.studySessionsCount + 1 }))} onTimerToggle={setIsStudyTimerActive} onSendMessage={handleSendMessage} isVoiceEnabled={state.isVoiceEnabled} onToggleVoice={() => setState(prev => ({ ...prev, isVoiceEnabled: !prev.isVoiceEnabled }))} />}
+        {state.currentView === 'workspace' && state.activeProjectId && <ProjectWorkspace project={state.projects.find(p => p.id === state.activeProjectId)!} onUpdateProject={(u) => setState(prev => ({ ...prev, projects: prev.projects.map(p => p.id === u.id ? u : p) }))} isVoiceEnabled={state.isVoiceEnabled} onToggleVoice={() => setState(prev => ({ ...prev, isVoiceEnabled: !prev.isVoiceEnabled }))} />}
       </main>
-
-      {/* Decorative HUD Elements */}
-      <div className="fixed top-4 right-4 text-[8px] font-mono text-[#00d2ff44] pointer-events-none select-none text-right hidden lg:block">
-        X: {Math.random().toFixed(4)}<br/>
-        Y: {Math.random().toFixed(4)}<br/>
-        Z: {Math.random().toFixed(4)}<br/>
-        LATENCY: 42ms<br/>
-        ENCRYPTION: AES-256
-      </div>
     </div>
   );
 };
